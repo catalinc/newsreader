@@ -1,9 +1,13 @@
 import asyncio
-import feedparser
-from dataclasses import dataclass, field
-from datetime import datetime
+import logging
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from html import unescape
-from typing import Optional
+
+import feedparser
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -13,7 +17,7 @@ class Article:
     source: str
     category: str
     summary: str = ""
-    published: Optional[datetime] = None
+    published: datetime | None = None
     bookmarked: bool = False
 
     @property
@@ -29,6 +33,7 @@ async def fetch_feed(feed_info: dict) -> list[Article]:
     try:
         parsed = await loop.run_in_executor(None, feedparser.parse, feed_info["url"])
     except Exception:
+        logger.warning("Failed to fetch feed %s", feed_info["url"], exc_info=True)
         return []
 
     articles = []
@@ -36,13 +41,12 @@ async def fetch_feed(feed_info: dict) -> list[Article]:
         published = None
         if hasattr(entry, "published_parsed") and entry.published_parsed:
             try:
-                published = datetime(*entry.published_parsed[:6])
+                published = datetime(*entry.published_parsed[:6], tzinfo=UTC)
             except Exception:
-                pass
+                logger.warning("Failed to parse published date for %s", feed_info["url"], exc_info=True)
 
         summary = getattr(entry, "summary", "") or ""
         # strip basic html tags from summary
-        import re
         summary = unescape(re.sub(r"<[^>]+>", "", summary).strip())
         summary = summary[:300] + "…" if len(summary) > 300 else summary
 
@@ -63,5 +67,5 @@ async def fetch_all_feeds(feeds: list[dict]) -> list[Article]:
     results = await asyncio.gather(*[fetch_feed(f) for f in feeds])
     articles = [a for feed_articles in results for a in feed_articles]
     # sort by published date, newest first
-    articles.sort(key=lambda a: a.published or datetime.min, reverse=True)
+    articles.sort(key=lambda a: a.published or datetime.min.replace(tzinfo=UTC), reverse=True)
     return articles

@@ -1,20 +1,20 @@
+from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
+
 import pytest
-from datetime import datetime
-from unittest.mock import patch, MagicMock
 
-from rss import Article, fetch_feed, fetch_all_feeds
-from feeds import DEFAULT_FEEDS
-
+from db import DEFAULT_FEEDS
+from rss import Article, fetch_all_feeds, fetch_feed
 
 # ── Article ────────────────────────────────────────────────────────────────────
 
 def make_article(**kwargs) -> Article:
-    defaults = dict(title="Test", url="https://example.com", source="TestFeed", category="Tech")
+    defaults = {"title": "Test", "url": "https://example.com", "source": "TestFeed", "category": "Tech"}
     return Article(**{**defaults, **kwargs})
 
 
 def test_article_published_str_with_date():
-    a = make_article(published=datetime(2024, 3, 15))
+    a = make_article(published=datetime(2024, 3, 15, tzinfo=UTC))
     assert a.published_str == "Mar 15, 2024"
 
 
@@ -67,7 +67,7 @@ async def test_fetch_feed_parses_articles():
         articles = await fetch_feed({"name": "Test", "url": "http://fake", "category": "Tech"})
     assert len(articles) == 2
     assert articles[0].title == "Article One"
-    assert articles[0].published == datetime(2024, 3, 15, 10, 0, 0)
+    assert articles[0].published == datetime(2024, 3, 15, 10, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -103,8 +103,8 @@ async def test_fetch_feed_returns_empty_on_error():
 
 @pytest.mark.asyncio
 async def test_fetch_all_feeds_sorted_newest_first():
-    a1 = make_article(url="u1", published=datetime(2024, 1, 1))
-    a2 = make_article(url="u2", published=datetime(2024, 3, 1))
+    a1 = make_article(url="u1", published=datetime(2024, 1, 1, tzinfo=UTC))
+    a2 = make_article(url="u2", published=datetime(2024, 3, 1, tzinfo=UTC))
     a3 = make_article(url="u3", published=None)
 
     async def fake_fetch(feed):

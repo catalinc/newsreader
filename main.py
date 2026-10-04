@@ -1,8 +1,20 @@
 import asyncio
 import re
-from nicegui import ui, app
+import sqlite3
+from typing import ClassVar
 
-from db import init_db, get_feeds, add_feed, remove_feed, update_feed, get_bookmarked_urls, add_bookmark, remove_bookmark
+from nicegui import app, ui
+
+from db import (
+    add_bookmark,
+    add_feed,
+    get_bookmarked_urls,
+    get_feeds,
+    init_db,
+    remove_bookmark,
+    remove_feed,
+    update_feed,
+)
 from rss import Article, fetch_all_feeds
 
 REFRESH_INTERVAL = 15 * 60  # seconds
@@ -13,7 +25,7 @@ init_db()
 # ── State ──────────────────────────────────────────────────────────────────────
 
 class State:
-    articles: list[Article] = []
+    articles: ClassVar[list[Article]] = []
     bookmarks: set[str] = get_bookmarked_urls()
     active_category: str = "All"
     search_query: str = ""
@@ -75,35 +87,37 @@ async def start_background_refresh():
 def article_card(article: Article, refresh_fn):
     is_bookmarked = article.url in state.bookmarks
 
-    with ui.card().classes("w-full p-4 hover:shadow-md transition-shadow cursor-pointer"):
-        with ui.row().classes("w-full items-start justify-between gap-2"):
-            with ui.column().classes("flex-1 gap-1"):
-                ui.link(article.title, article.url, new_tab=True).classes(
-                    "text-base font-semibold text-blue-700 hover:underline leading-snug"
-                )
-                with ui.row().classes("items-center gap-2 text-xs text-gray-500"):
-                    ui.badge(article.category, color="indigo").classes("text-xs")
-                    ui.label(article.source).classes("font-medium")
-                    if article.published_str:
-                        ui.label("·")
-                        ui.label(article.published_str)
-                if article.summary:
-                    render_summary(article.summary)
-
-            def toggle_bookmark(a=article):
-                if a.url in state.bookmarks:
-                    state.bookmarks.discard(a.url)
-                    remove_bookmark(a.url)
-                else:
-                    state.bookmarks.add(a.url)
-                    add_bookmark(a)
-                refresh_fn()
-
-            bookmark_icon = "bookmark" if is_bookmarked else "bookmark_border"
-            bookmark_color = "text-yellow-500" if is_bookmarked else "text-gray-400"
-            ui.button(icon=bookmark_icon, on_click=toggle_bookmark).props("flat round").classes(
-                f"{bookmark_color} hover:text-yellow-500"
+    with (
+        ui.card().classes("w-full p-4 hover:shadow-md transition-shadow cursor-pointer"),
+        ui.row().classes("w-full items-start justify-between gap-2"),
+    ):
+        with ui.column().classes("flex-1 gap-1"):
+            ui.link(article.title, article.url, new_tab=True).classes(
+                "text-base font-semibold text-blue-700 hover:underline leading-snug"
             )
+            with ui.row().classes("items-center gap-2 text-xs text-gray-500"):
+                ui.badge(article.category, color="indigo").classes("text-xs")
+                ui.label(article.source).classes("font-medium")
+                if article.published_str:
+                    ui.label("·")
+                    ui.label(article.published_str)
+            if article.summary:
+                render_summary(article.summary)
+
+        def toggle_bookmark(a=article):
+            if a.url in state.bookmarks:
+                state.bookmarks.discard(a.url)
+                remove_bookmark(a.url)
+            else:
+                state.bookmarks.add(a.url)
+                add_bookmark(a)
+            refresh_fn()
+
+        bookmark_icon = "bookmark" if is_bookmarked else "bookmark_border"
+        bookmark_color = "text-yellow-500" if is_bookmarked else "text-gray-400"
+        ui.button(icon=bookmark_icon, on_click=toggle_bookmark).props("flat round").classes(
+            f"{bookmark_color} hover:text-yellow-500"
+        )
 
 
 def render_articles(container, articles: list[Article], refresh_fn):
@@ -242,19 +256,21 @@ def feeds_page():
             feed_list.clear()
             with feed_list:
                 for feed in get_feeds():
-                    with ui.card().classes("w-full p-3"):
-                        with ui.row().classes("w-full items-center gap-3"):
-                            with ui.column().classes("flex-1 gap-0"):
-                                ui.label(feed["name"]).classes("font-semibold text-gray-800")
-                                ui.label(feed["url"]).classes("text-xs text-gray-400 break-all")
-                                ui.badge(feed["category"], color="indigo").classes("text-xs w-fit mt-1")
+                    with (
+                        ui.card().classes("w-full p-3"),
+                        ui.row().classes("w-full items-center gap-3"),
+                    ):
+                        with ui.column().classes("flex-1 gap-0"):
+                            ui.label(feed["name"]).classes("font-semibold text-gray-800")
+                            ui.label(feed["url"]).classes("text-xs text-gray-400 break-all")
+                            ui.badge(feed["category"], color="indigo").classes("text-xs w-fit mt-1")
 
-                            ui.button(icon="edit").props("flat round").classes("text-gray-400").on(
-                                "click", lambda f=feed: open_edit_dialog(f)
-                            )
-                            ui.button(icon="delete").props("flat round").classes("text-red-400").on(
-                                "click", lambda f=feed: confirm_delete(f)
-                            )
+                        ui.button(icon="edit").props("flat round").classes("text-gray-400").on(
+                            "click", lambda f=feed: open_edit_dialog(f)
+                        )
+                        ui.button(icon="delete").props("flat round").classes("text-red-400").on(
+                            "click", lambda f=feed: confirm_delete(f)
+                        )
 
         def confirm_delete(feed: dict):
             with ui.dialog() as dlg, ui.card().classes("p-6 gap-4 min-w-72"):
@@ -310,7 +326,7 @@ def feeds_page():
                         url_input.set_value("")
                         cat_input.set_value("")
                         render_feeds()
-                    except Exception:
+                    except sqlite3.IntegrityError:
                         ui.notify("A feed with that URL already exists.", type="negative")
                 ui.button("Add", icon="add", on_click=do_add).classes("bg-indigo-600 text-white")
 

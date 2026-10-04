@@ -1,8 +1,6 @@
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
-from typing import Optional
 
 DB_PATH = os.environ.get("DB_PATH", "newsreader.db")
 
