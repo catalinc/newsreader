@@ -7,6 +7,10 @@ requires-python = ">=3.14"
 dependencies = [
     "feedparser>=6.0.0",
     "nicegui>=1.4.0",
+]
+
+[dependency-groups]
+dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
