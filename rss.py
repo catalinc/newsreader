@@ -60,14 +60,36 @@ class Article:
         return ""
 
 
+class FeedUnreachableError(Exception):
+    """The feed could not be downloaded or did not contain a feed."""
+
+
+@dataclass
+class FetchResult:
+    articles: list[Article]
+    # feed url -> why it was unreachable, or None if it was fetched fine
+    errors: dict[str, str | None]
+
+
 async def fetch_feed(feed_info: dict) -> list[Article]:
-    """Fetch and parse a single RSS feed asynchronously."""
+    """Fetch and parse a single RSS feed asynchronously.
+
+    Raises FeedUnreachableError when the feed can't be fetched or parsed.
+    """
     loop = asyncio.get_event_loop()
     try:
         parsed = await loop.run_in_executor(None, feedparser.parse, feed_info["url"])
-    except Exception:
+    except Exception as e:
         logger.warning("Failed to fetch feed %s", feed_info["url"], exc_info=True)
-        return []
+        raise FeedUnreachableError(str(e) or type(e).__name__) from e
+
+    # feedparser reports network and parse failures instead of raising them
+    status = parsed.get("status")
+    if status is not None and status >= 400:
+        raise FeedUnreachableError(f"HTTP {status}")
+    if parsed.get("bozo") and not parsed.entries:
+        error = parsed.get("bozo_exception")
+        raise FeedUnreachableError(str(error) if error else "Not a valid feed")
 
     articles = []
     for entry in parsed.entries[:20]:  # cap at 20 per feed
@@ -93,10 +115,19 @@ async def fetch_feed(feed_info: dict) -> list[Article]:
     return articles
 
 
-async def fetch_all_feeds(feeds: list[dict]) -> list[Article]:
-    """Fetch all feeds concurrently."""
-    results = await asyncio.gather(*[fetch_feed(f) for f in feeds])
-    articles = [a for feed_articles in results for a in feed_articles]
+async def fetch_all_feeds(feeds: list[dict]) -> FetchResult:
+    """Fetch all feeds concurrently, noting which ones were unreachable."""
+    results = await asyncio.gather(*[fetch_feed(f) for f in feeds], return_exceptions=True)
+    articles: list[Article] = []
+    errors: dict[str, str | None] = {}
+    for feed, result in zip(feeds, results, strict=True):
+        if isinstance(result, FeedUnreachableError):
+            errors[feed["url"]] = str(result)
+        elif isinstance(result, BaseException):
+            raise result
+        else:
+            articles += result
+            errors[feed["url"]] = None
     # sort by published date, newest first
     articles.sort(key=lambda a: a.published or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return articles
+    return FetchResult(articles, errors)

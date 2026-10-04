@@ -10,6 +10,7 @@ A web-based RSS reader built with [NiceGUI](https://nicegui.io) and Python.
 - Feed list is stored in SQLite and can be managed directly in the database
 - Background job refreshes feeds every 15 minutes automatically
 - Shows each feed's site favicon as its logo, with a newspaper icon when none is available
+- Flags unreachable feeds on the Manage Feeds page, with when each was last reachable
 
 ## Running locally
 
@@ -57,4 +58,5 @@ UPDATE feeds SET logo_fetched_at = NULL WHERE name = 'BBC News';
 | `main.py` | NiceGUI app, UI layout, page logic |
 | `rss.py` | Feed fetching and article parsing |
 | `favicon.py` | Feed logo (site favicon) discovery and download |
+| `timefmt.py` | Human-friendly relative times ("3 weeks ago") |
 | `db.py` | SQLite schema, feeds and bookmarks CRUD |

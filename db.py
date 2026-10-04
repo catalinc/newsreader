@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import UTC, datetime
 
 DB_PATH = os.environ.get("DB_PATH", "newsreader.db")
 
@@ -36,7 +37,10 @@ def init_db() -> None:
                 category TEXT NOT NULL,
                 logo     BLOB,
                 logo_type TEXT,
-                logo_fetched_at TEXT
+                logo_fetched_at TEXT,
+                last_checked_at TEXT,
+                last_ok_at TEXT,
+                last_error TEXT
             );
 
             CREATE TABLE IF NOT EXISTS bookmarks (
@@ -50,9 +54,16 @@ def init_db() -> None:
             );
         """)
 
-        # migrate databases created before feed logos existed
+        # migrate databases created before feed logos and reachability tracking existed
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(feeds)")}
-        for column, sql_type in (("logo", "BLOB"), ("logo_type", "TEXT"), ("logo_fetched_at", "TEXT")):
+        for column, sql_type in (
+            ("logo", "BLOB"),
+            ("logo_type", "TEXT"),
+            ("logo_fetched_at", "TEXT"),
+            ("last_checked_at", "TEXT"),
+            ("last_ok_at", "TEXT"),
+            ("last_error", "TEXT"),
+        ):
             if column not in columns:
                 conn.execute(f"ALTER TABLE feeds ADD COLUMN {column} {sql_type}")
 
@@ -66,16 +77,21 @@ def init_db() -> None:
 # ── Feeds ──────────────────────────────────────────────────────────────────────
 
 def get_feeds() -> list[dict]:
-    """All feeds; logo_url is None when the feed has no logo (show the default)."""
+    """All feeds; logo_url is None when the feed has no logo (show the default).
+
+    last_error is set when the latest fetch failed; last_ok_at (a UTC datetime,
+    or None if never) is when the feed was last fetched successfully.
+    """
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT id, name, url, category,
+            """SELECT id, name, url, category, last_ok_at, last_error,
                       CASE WHEN logo IS NOT NULL THEN strftime('%s', logo_fetched_at) END AS logo_version
                FROM feeds ORDER BY id"""
         ).fetchall()
     feeds = []
     for r in rows:
-        feed = {k: r[k] for k in ("id", "name", "url", "category")}
+        feed = {k: r[k] for k in ("id", "name", "url", "category", "last_error")}
+        feed["last_ok_at"] = datetime.fromisoformat(r["last_ok_at"]) if r["last_ok_at"] else None
         # the version query param busts browser caches when the logo is refetched
         feed["logo_url"] = f"/feed-logo/{r['id']}?v={r['logo_version']}" if r["logo_version"] else None
         feeds.append(feed)
@@ -102,11 +118,30 @@ def update_feed(original_url: str, name: str, url: str, category: str) -> None:
             (name, url, category, original_url),
         )
         if url != original_url:
-            # the logo belonged to the old URL; mark it for refetching
+            # the logo and reachability belonged to the old URL; start over
             conn.execute(
-                "UPDATE feeds SET logo = NULL, logo_type = NULL, logo_fetched_at = NULL WHERE url = ?",
+                """UPDATE feeds SET logo = NULL, logo_type = NULL, logo_fetched_at = NULL,
+                                    last_checked_at = NULL, last_ok_at = NULL, last_error = NULL
+                   WHERE url = ?""",
                 (url,),
             )
+
+
+def record_feed_statuses(errors: dict[str, str | None]) -> None:
+    """Store fetch outcomes: feed url -> error message, or None if it was reachable."""
+    now = datetime.now(UTC).isoformat()
+    with get_conn() as conn:
+        for url, error in errors.items():
+            if error is None:
+                conn.execute(
+                    "UPDATE feeds SET last_checked_at = ?, last_ok_at = ?, last_error = NULL WHERE url = ?",
+                    (now, now, url),
+                )
+            else:
+                conn.execute(
+                    "UPDATE feeds SET last_checked_at = ?, last_error = ? WHERE url = ?",
+                    (now, error, url),
+                )
 
 
 def get_feed_logo(feed_id: int) -> tuple[bytes, str] | None:

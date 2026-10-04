@@ -12,6 +12,7 @@ from db import (
     get_feed_urls_without_logo_check,
     get_feeds,
     init_db,
+    record_feed_statuses,
     remove_bookmark,
     remove_feed,
     set_feed_logo,
@@ -19,6 +20,7 @@ from db import (
 )
 from favicon import fetch_favicon
 from rss import URL_RE, Article, fetch_all_feeds
+from timefmt import time_ago
 
 REFRESH_INTERVAL = 15 * 60  # seconds
 
@@ -75,11 +77,24 @@ def render_summary(text: str):
 
 # ── Background refresh ─────────────────────────────────────────────────────────
 
+async def fetch_articles(feeds: list[dict]) -> list[Article]:
+    """Fetch feeds and remember which ones were reachable."""
+    result = await fetch_all_feeds(feeds)
+    record_feed_statuses(result.errors)
+    return result.articles
+
+
+async def check_feed(url: str) -> None:
+    """Fetch a feed's logo and test that it's reachable, e.g. right after adding it."""
+    feeds = [f for f in get_feeds() if f["url"] == url]
+    await asyncio.gather(refresh_feed_logo(url), fetch_articles(feeds))
+
+
 async def background_refresh():
     """Periodically re-fetch all feeds and update shared state."""
     while True:
         await asyncio.sleep(REFRESH_INTERVAL)
-        state.articles = await fetch_all_feeds(get_feeds())
+        state.articles = await fetch_articles(get_feeds())
 
 
 @app.on_startup
@@ -109,14 +124,23 @@ def feed_logo_endpoint(feed_id: int) -> Response:
     return Response(content=data, media_type=mime, headers={"Cache-Control": "public, max-age=604800"})
 
 
-def feed_logo(logo_url: str | None, size: str):
-    """Render a feed's favicon, or a newspaper icon when it has none."""
-    if logo_url:
-        ui.element("img").props(f'src="{logo_url}" alt=""').classes(
-            "object-contain rounded-sm shrink-0"
-        ).style(f"width: {size}; height: {size}")
-    else:
-        ui.icon("newspaper").classes("text-gray-400 shrink-0").style(f"font-size: {size}")
+def feed_logo(logo_url: str | None, size: str, dead: bool = False):
+    """Render a feed's favicon, or a newspaper icon when it has none.
+
+    A dead feed's logo is greyed out and badged with a broken link.
+    """
+    faded = " grayscale opacity-40" if dead else ""
+    with ui.element("div").classes("relative shrink-0").style(f"width: {size}; height: {size}"):
+        if logo_url:
+            ui.element("img").props(f'src="{logo_url}" alt=""').classes(
+                "w-full h-full object-contain rounded-sm" + faded
+            )
+        else:
+            ui.icon("newspaper").classes("text-gray-400" + faded).style(f"font-size: {size}")
+        if dead:
+            ui.icon("link_off").classes(
+                "absolute -bottom-1 -right-1 rounded-full bg-white text-red-500"
+            ).style(f"font-size: calc({size} / 2)")
 
 
 # ── UI helpers ─────────────────────────────────────────────────────────────────
@@ -251,7 +275,7 @@ async def index():
         state.loading = True
         refresh_ui()
         try:
-            state.articles = await fetch_all_feeds(get_feeds())
+            state.articles = await fetch_articles(get_feeds())
         finally:
             state.loading = False
             refresh_ui()
@@ -298,10 +322,18 @@ def feeds_page():
                         ui.card().classes("w-full p-3"),
                         ui.row().classes("w-full items-center gap-3"),
                     ):
-                        feed_logo(feed["logo_url"], "32px")
+                        dead = feed["last_error"] is not None
+                        feed_logo(feed["logo_url"], "32px", dead=dead)
                         with ui.column().classes("flex-1 gap-0"):
                             ui.label(feed["name"]).classes("font-semibold text-gray-800")
                             ui.label(feed["url"]).classes("text-xs text-gray-400 break-all")
+                            if dead:
+                                last_ok = feed["last_ok_at"]
+                                since = f"last reachable {time_ago(last_ok)}" if last_ok else "never reachable"
+                                with ui.row().classes("items-center gap-1 text-xs text-red-500 mt-1"):
+                                    ui.icon("error_outline").style("font-size: 14px")
+                                    ui.label(f"Unreachable · {since}")
+                                    ui.tooltip(feed["last_error"])
                             ui.badge(feed["category"], color="indigo").classes("text-xs w-fit mt-1")
 
                         ui.button(icon="edit").props("flat round").classes("text-gray-400").on(
@@ -343,7 +375,7 @@ def feeds_page():
                         dlg.close()
                         render_feeds()
                         if url != f["url"]:
-                            await refresh_feed_logo(url)
+                            await check_feed(url)
                             render_feeds()
                     ui.button("Save", on_click=do_save).classes("bg-indigo-600 text-white")
             dlg.open()
@@ -371,7 +403,7 @@ def feeds_page():
                     url_input.set_value("")
                     cat_input.set_value("")
                     render_feeds()
-                    await refresh_feed_logo(url)
+                    await check_feed(url)
                     render_feeds()
                 ui.button("Add", icon="add", on_click=do_add).classes("bg-indigo-600 text-white")
 

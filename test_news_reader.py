@@ -1,13 +1,22 @@
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from feedparser import FeedParserDict
 
 import db
 from db import DEFAULT_FEEDS
 from favicon import fetch_favicon, sniff_image_type
-from rss import Article, clean_summary, fetch_all_feeds, fetch_feed, truncate_summary
+from rss import (
+    Article,
+    FeedUnreachableError,
+    clean_summary,
+    fetch_all_feeds,
+    fetch_feed,
+    truncate_summary,
+)
+from timefmt import time_ago
 
 # ── Article ────────────────────────────────────────────────────────────────────
 
@@ -52,15 +61,14 @@ MOCK_FEED = {
 }
 
 
-def _make_mock_parsed(entries):
-    mock = MagicMock()
-    mock.entries = []
+def _make_mock_parsed(entries, **result):
+    parsed = FeedParserDict({"bozo": False, "entries": [], **result})
     for e in entries:
         entry = MagicMock(spec=list(e.keys()))
         for k, v in e.items():
             setattr(entry, k, v)
-        mock.entries.append(entry)
-    return mock
+        parsed.entries.append(entry)
+    return parsed
 
 
 @pytest.mark.asyncio
@@ -98,10 +106,45 @@ async def test_fetch_feed_truncates_long_summary():
 
 
 @pytest.mark.asyncio
-async def test_fetch_feed_returns_empty_on_error():
-    with patch("rss.feedparser.parse", side_effect=Exception("network error")):
+async def test_fetch_feed_raises_unreachable_on_error():
+    with (
+        patch("rss.feedparser.parse", side_effect=Exception("network error")),
+        pytest.raises(FeedUnreachableError, match="network error"),
+    ):
+        await fetch_feed({"name": "T", "url": "http://fake", "category": "Tech"})
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_raises_unreachable_on_http_error():
+    with (
+        patch("rss.feedparser.parse", return_value=_make_mock_parsed([], status=404)),
+        pytest.raises(FeedUnreachableError, match="HTTP 404"),
+    ):
+        await fetch_feed({"name": "T", "url": "http://fake", "category": "Tech"})
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_raises_unreachable_when_not_a_feed():
+    parsed = _make_mock_parsed([], bozo=True, bozo_exception=OSError("name not known"))
+    with (
+        patch("rss.feedparser.parse", return_value=parsed),
+        pytest.raises(FeedUnreachableError, match="name not known"),
+    ):
+        await fetch_feed({"name": "T", "url": "http://fake", "category": "Tech"})
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_tolerates_malformed_feed_with_entries():
+    parsed = _make_mock_parsed(MOCK_FEED["entries"], bozo=True, bozo_exception=ValueError("bad xml"))
+    with patch("rss.feedparser.parse", return_value=parsed):
         articles = await fetch_feed({"name": "T", "url": "http://fake", "category": "Tech"})
-    assert articles == []
+    assert len(articles) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_empty_feed_is_reachable():
+    with patch("rss.feedparser.parse", return_value=_make_mock_parsed([], status=200)):
+        assert await fetch_feed({"name": "T", "url": "http://fake", "category": "Tech"}) == []
 
 
 @pytest.mark.asyncio
@@ -114,10 +157,25 @@ async def test_fetch_all_feeds_sorted_newest_first():
         return [a1, a2, a3]
 
     with patch("rss.fetch_feed", side_effect=fake_fetch):
-        articles = await fetch_all_feeds([{"name": "T", "url": "", "category": "X"}])
+        result = await fetch_all_feeds([{"name": "T", "url": "", "category": "X"}])
 
-    dates = [a.published for a in articles if a.published is not None]
+    dates = [a.published for a in result.articles if a.published is not None]
     assert dates[0] > dates[1]
+
+
+@pytest.mark.asyncio
+async def test_fetch_all_feeds_reports_unreachable_feeds():
+    async def fake_fetch(feed):
+        if feed["url"] == "dead":
+            raise FeedUnreachableError("HTTP 410")
+        return [make_article(url="a1")]
+
+    feeds = [{"name": n, "url": n, "category": "X"} for n in ("alive", "dead")]
+    with patch("rss.fetch_feed", side_effect=fake_fetch):
+        result = await fetch_all_feeds(feeds)
+
+    assert [a.url for a in result.articles] == ["a1"]
+    assert result.errors == {"alive": None, "dead": "HTTP 410"}
 
 
 # ── Summary cleanup ────────────────────────────────────────────────────────────
@@ -273,3 +331,67 @@ def test_init_db_migrates_old_feeds_table(tmp_path, monkeypatch):
     db.init_db()
 
     assert db.get_feed_urls_without_logo_check() == ["https://old.test/rss"]
+
+
+# ── Feed reachability ──────────────────────────────────────────────────────────
+
+def _feed(url):
+    return next(f for f in db.get_feeds() if f["url"] == url)
+
+
+def test_new_feeds_are_not_marked_dead(temp_db):
+    assert all(f["last_error"] is None and f["last_ok_at"] is None for f in db.get_feeds())
+
+
+def test_record_feed_statuses_tracks_last_success(temp_db):
+    url = DEFAULT_FEEDS[0]["url"]
+    db.record_feed_statuses({url: None})
+    last_ok = _feed(url)["last_ok_at"]
+    assert last_ok is not None
+    assert _feed(url)["last_error"] is None
+
+    db.record_feed_statuses({url: "HTTP 404"})
+    feed = _feed(url)
+    assert feed["last_error"] == "HTTP 404"
+    assert feed["last_ok_at"] == last_ok
+
+    db.record_feed_statuses({url: None})
+    assert _feed(url)["last_error"] is None
+
+
+def test_changing_feed_url_clears_status(temp_db):
+    old = DEFAULT_FEEDS[0]["url"]
+    db.record_feed_statuses({old: "HTTP 404"})
+    db.update_feed(old, "Renamed", "https://new.test/rss", "World")
+    feed = _feed("https://new.test/rss")
+    assert feed["last_error"] is None
+    assert feed["last_ok_at"] is None
+
+
+# ── time_ago ───────────────────────────────────────────────────────────────────
+
+NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("delta", "expected"),
+    [
+        (timedelta(seconds=10), "just now"),
+        (timedelta(minutes=1), "a minute ago"),
+        (timedelta(minutes=5), "5 minutes ago"),
+        (timedelta(hours=1), "an hour ago"),
+        (timedelta(hours=3), "3 hours ago"),
+        (timedelta(hours=30), "yesterday"),
+        (timedelta(days=3), "3 days ago"),
+        (timedelta(days=7), "a week ago"),
+        (timedelta(days=20), "2 weeks ago"),
+        (timedelta(days=40), "a month ago"),
+        (timedelta(days=150), "5 months ago"),
+        (timedelta(days=364), "11 months ago"),
+        (timedelta(days=400), "a year ago"),
+        (timedelta(days=800), "2 years ago"),
+        (timedelta(seconds=-30), "just now"),
+    ],
+)
+def test_time_ago(delta, expected):
+    assert time_ago(NOW - delta, now=NOW) == expected
