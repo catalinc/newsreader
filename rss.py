@@ -9,6 +9,38 @@ import feedparser
 
 logger = logging.getLogger(__name__)
 
+SUMMARY_LIMIT = 300  # visible characters, not counting URLs
+
+URL_RE = re.compile(r"(https?://[^\s<>\"']+)", re.IGNORECASE)
+_BLOCK_BREAK_RE = re.compile(r"<br\s*/?>|</(?:p|div|li|h[1-6]|tr|blockquote)>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def clean_summary(html: str) -> str:
+    """Strip HTML from a feed summary, keeping paragraphs and line breaks as lines."""
+    text = _TAG_RE.sub("", _BLOCK_BREAK_RE.sub("\n", html))
+    lines = (" ".join(unescape(line).split()) for line in text.splitlines())
+    return truncate_summary("\n".join(line for line in lines if line))
+
+
+def truncate_summary(text: str, limit: int = SUMMARY_LIMIT) -> str:
+    """Cut text to `limit` visible characters, never splitting a URL.
+
+    URLs don't count towards the limit: the UI shortens them to one line each.
+    """
+    out: list[str] = []
+    used = 0
+    for i, part in enumerate(URL_RE.split(text)):
+        if i % 2 == 1:
+            out.append(part)
+            continue
+        if used + len(part) > limit:
+            out.append(part[: limit - used].rstrip() + "…")
+            break
+        out.append(part)
+        used += len(part)
+    return "".join(out)
+
 
 @dataclass
 class Article:
@@ -19,6 +51,7 @@ class Article:
     summary: str = ""
     published: datetime | None = None
     bookmarked: bool = False
+    logo_url: str | None = None
 
     @property
     def published_str(self) -> str:
@@ -45,10 +78,7 @@ async def fetch_feed(feed_info: dict) -> list[Article]:
             except Exception:
                 logger.warning("Failed to parse published date for %s", feed_info["url"], exc_info=True)
 
-        summary = getattr(entry, "summary", "") or ""
-        # strip basic html tags from summary
-        summary = unescape(re.sub(r"<[^>]+>", "", summary).strip())
-        summary = summary[:300] + "…" if len(summary) > 300 else summary
+        summary = clean_summary(getattr(entry, "summary", "") or "")
 
         articles.append(Article(
             title=unescape(getattr(entry, "title", "No title")),
@@ -57,6 +87,7 @@ async def fetch_feed(feed_info: dict) -> list[Article]:
             category=feed_info["category"],
             summary=summary,
             published=published,
+            logo_url=feed_info.get("logo_url"),
         ))
 
     return articles

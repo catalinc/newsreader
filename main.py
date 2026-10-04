@@ -1,20 +1,24 @@
 import asyncio
-import re
 import sqlite3
 
+from fastapi import Response
 from nicegui import app, ui
 
 from db import (
     add_bookmark,
     add_feed,
     get_bookmarked_urls,
+    get_feed_logo,
+    get_feed_urls_without_logo_check,
     get_feeds,
     init_db,
     remove_bookmark,
     remove_feed,
+    set_feed_logo,
     update_feed,
 )
-from rss import Article, fetch_all_feeds
+from favicon import fetch_favicon
+from rss import URL_RE, Article, fetch_all_feeds
 
 REFRESH_INTERVAL = 15 * 60  # seconds
 
@@ -53,19 +57,20 @@ class State:
 
 state = State()
 
-_URL_RE = re.compile(r"(https?://[^\s<>\"']+)", re.IGNORECASE)
-
-
 def render_summary(text: str):
-    parts = _URL_RE.split(text)
-    with ui.row().classes("text-sm text-gray-600 mt-1 leading-relaxed flex-wrap gap-0 items-baseline"):
-        for i, part in enumerate(parts):
-            if not part:
-                continue
-            if i % 2 == 1:
-                ui.link(part, part, new_tab=True).classes("text-blue-600 hover:underline break-all")
-            else:
-                ui.label(part)
+    """Render each summary line on its own row; long URLs are cut to one line with an ellipsis."""
+    with ui.column().classes("w-full text-sm text-gray-600 mt-1 leading-relaxed gap-0.5"):
+        for line in text.splitlines():
+            with ui.element("div").classes("w-full"):
+                for i, part in enumerate(URL_RE.split(line)):
+                    if not part:
+                        continue
+                    if i % 2 == 1:
+                        ui.link(part, part, new_tab=True).props(f'title="{part}"').classes(
+                            "inline-block max-w-full truncate align-bottom text-blue-600 hover:underline"
+                        )
+                    else:
+                        ui.label(part).classes("inline whitespace-pre-wrap")
 
 
 # ── Background refresh ─────────────────────────────────────────────────────────
@@ -80,6 +85,38 @@ async def background_refresh():
 @app.on_startup
 async def start_background_refresh():
     asyncio.ensure_future(background_refresh())
+    asyncio.ensure_future(fetch_missing_logos())
+
+
+# ── Feed logos ─────────────────────────────────────────────────────────────────
+
+async def refresh_feed_logo(url: str) -> None:
+    set_feed_logo(url, await asyncio.to_thread(fetch_favicon, url))
+
+
+async def fetch_missing_logos():
+    """Look up favicons for feeds that never had one fetched, e.g. seeded defaults."""
+    await asyncio.gather(*(refresh_feed_logo(url) for url in get_feed_urls_without_logo_check()))
+
+
+@app.get("/feed-logo/{feed_id}")
+def feed_logo_endpoint(feed_id: int) -> Response:
+    logo = get_feed_logo(feed_id)
+    if logo is None:
+        return Response(status_code=404)
+    data, mime = logo
+    # URLs carry a version param, so the browser may cache them for long
+    return Response(content=data, media_type=mime, headers={"Cache-Control": "public, max-age=604800"})
+
+
+def feed_logo(logo_url: str | None, size: str):
+    """Render a feed's favicon, or a newspaper icon when it has none."""
+    if logo_url:
+        ui.element("img").props(f'src="{logo_url}" alt=""').classes(
+            "object-contain rounded-sm shrink-0"
+        ).style(f"width: {size}; height: {size}")
+    else:
+        ui.icon("newspaper").classes("text-gray-400 shrink-0").style(f"font-size: {size}")
 
 
 # ── UI helpers ─────────────────────────────────────────────────────────────────
@@ -97,6 +134,7 @@ def article_card(article: Article, refresh_fn):
             )
             with ui.row().classes("items-center gap-2 text-xs text-gray-500"):
                 ui.badge(article.category, color="indigo").classes("text-xs")
+                feed_logo(article.logo_url, "16px")
                 ui.label(article.source).classes("font-medium")
                 if article.published_str:
                     ui.label("·")
@@ -260,6 +298,7 @@ def feeds_page():
                         ui.card().classes("w-full p-3"),
                         ui.row().classes("w-full items-center gap-3"),
                     ):
+                        feed_logo(feed["logo_url"], "32px")
                         with ui.column().classes("flex-1 gap-0"):
                             ui.label(feed["name"]).classes("font-semibold text-gray-800")
                             ui.label(feed["url"]).classes("text-xs text-gray-400 break-all")
@@ -293,7 +332,7 @@ def feeds_page():
                 cat_input = ui.input("Category", value=feed["category"]).classes("w-full").props("outlined dense")
                 with ui.row().classes("justify-end gap-2 w-full"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
-                    def do_save(f=feed):
+                    async def do_save(f=feed):
                         name = name_input.value.strip()
                         url = url_input.value.strip()
                         cat = cat_input.value.strip()
@@ -303,6 +342,9 @@ def feeds_page():
                         update_feed(f["url"], name, url, cat)
                         dlg.close()
                         render_feeds()
+                        if url != f["url"]:
+                            await refresh_feed_logo(url)
+                            render_feeds()
                     ui.button("Save", on_click=do_save).classes("bg-indigo-600 text-white")
             dlg.open()
 
@@ -313,7 +355,7 @@ def feeds_page():
                 name_input = ui.input("Name").classes("flex-1 min-w-32").props("outlined dense")
                 url_input = ui.input("URL").classes("flex-2 min-w-64").props("outlined dense")
                 cat_input = ui.input("Category").classes("flex-1 min-w-32").props("outlined dense")
-                def do_add():
+                async def do_add():
                     name = name_input.value.strip()
                     url = url_input.value.strip()
                     cat = cat_input.value.strip()
@@ -322,12 +364,15 @@ def feeds_page():
                         return
                     try:
                         add_feed(name, url, cat)
-                        name_input.set_value("")
-                        url_input.set_value("")
-                        cat_input.set_value("")
-                        render_feeds()
                     except sqlite3.IntegrityError:
                         ui.notify("A feed with that URL already exists.", type="negative")
+                        return
+                    name_input.set_value("")
+                    url_input.set_value("")
+                    cat_input.set_value("")
+                    render_feeds()
+                    await refresh_feed_logo(url)
+                    render_feeds()
                 ui.button("Add", icon="add", on_click=do_add).classes("bg-indigo-600 text-white")
 
         render_feeds()

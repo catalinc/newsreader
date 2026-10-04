@@ -9,6 +9,7 @@ A web-based RSS reader built with [NiceGUI](https://nicegui.io) and Python.
 - Bookmarks persist across restarts (SQLite)
 - Feed list is stored in SQLite and can be managed directly in the database
 - Background job refreshes feeds every 15 minutes automatically
+- Shows each feed's site favicon as its logo, with a newspaper icon when none is available
 
 ## Running locally
 
@@ -43,10 +44,17 @@ INSERT INTO feeds (name, url, category) VALUES ('My Blog', 'https://example.com/
 DELETE FROM feeds WHERE name = 'Reuters';
 ```
 
+Feed logos are fetched when a feed is added from the UI or its URL is changed. On startup, the app also looks up a logo for any feed that has never been checked (including the seeded defaults and feeds inserted with `sqlite3`). To refetch a logo, clear its check timestamp and restart:
+
+```sql
+UPDATE feeds SET logo_fetched_at = NULL WHERE name = 'BBC News';
+```
+
 ## Project structure
 
 | File | Purpose |
 |------|---------|
 | `main.py` | NiceGUI app, UI layout, page logic |
 | `rss.py` | Feed fetching and article parsing |
+| `favicon.py` | Feed logo (site favicon) discovery and download |
 | `db.py` | SQLite schema, feeds and bookmarks CRUD |
