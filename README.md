@@ -50,4 +50,3 @@ DELETE FROM feeds WHERE name = 'Reuters';
 | `main.py` | NiceGUI app, UI layout, page logic |
 | `rss.py` | Feed fetching and article parsing |
 | `db.py` | SQLite schema, feeds and bookmarks CRUD |
-| `feeds.py` | Legacy stub (feed defaults moved to `db.py`) |
