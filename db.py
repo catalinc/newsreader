@@ -6,7 +6,6 @@ DB_PATH = os.environ.get("DB_PATH", "newsreader.db")
 
 DEFAULT_FEEDS = [
     {"name": "BBC News", "url": "http://feeds.bbci.co.uk/news/rss.xml", "category": "World"},
-    {"name": "Reuters", "url": "https://feeds.reuters.com/reuters/topNews", "category": "World"},
     {"name": "Hacker News", "url": "https://hnrss.org/frontpage", "category": "Tech"},
     {"name": "The Verge", "url": "https://www.theverge.com/rss/index.xml", "category": "Tech"},
     {"name": "Ars Technica", "url": "http://feeds.arstechnica.com/arstechnica/index", "category": "Tech"},

@@ -41,7 +41,7 @@ Feeds are seeded from defaults on first run and stored in the `feeds` table of t
 sqlite3 newsreader.db
 
 INSERT INTO feeds (name, url, category) VALUES ('My Blog', 'https://example.com/feed.xml', 'Tech');
-DELETE FROM feeds WHERE name = 'Reuters';
+DELETE FROM feeds WHERE name = 'My Blog';
 ```
 
 Feed logos are fetched when a feed is added from the UI or its URL is changed. On startup, the app also looks up a logo for any feed that has never been checked (including the seeded defaults and feeds inserted with `sqlite3`). To refetch a logo, clear its check timestamp and restart:
