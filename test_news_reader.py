@@ -113,8 +113,8 @@ async def test_fetch_all_feeds_sorted_newest_first():
     with patch("rss.fetch_feed", side_effect=fake_fetch):
         articles = await fetch_all_feeds([{"name": "T", "url": "", "category": "X"}])
 
-    dated = [a for a in articles if a.published]
-    assert dated[0].published > dated[1].published
+    dates = [a.published for a in articles if a.published is not None]
+    assert dates[0] > dates[1]
 
 
 # ── Default feeds ──────────────────────────────────────────────────────────────

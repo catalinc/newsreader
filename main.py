@@ -1,7 +1,6 @@
 import asyncio
 import re
 import sqlite3
-from typing import ClassVar
 
 from nicegui import app, ui
 
@@ -25,11 +24,12 @@ init_db()
 # ── State ──────────────────────────────────────────────────────────────────────
 
 class State:
-    articles: ClassVar[list[Article]] = []
-    bookmarks: set[str] = get_bookmarked_urls()
-    active_category: str = "All"
-    search_query: str = ""
-    loading: bool = False
+    def __init__(self) -> None:
+        self.articles: list[Article] = []
+        self.bookmarks: set[str] = get_bookmarked_urls()
+        self.active_category: str = "All"
+        self.search_query: str = ""
+        self.loading: bool = False
 
     @property
     def categories(self) -> list[str]:
@@ -266,10 +266,10 @@ def feeds_page():
                             ui.badge(feed["category"], color="indigo").classes("text-xs w-fit mt-1")
 
                         ui.button(icon="edit").props("flat round").classes("text-gray-400").on(
-                            "click", lambda f=feed: open_edit_dialog(f)
+                            "click", lambda _, f=feed: open_edit_dialog(f)
                         )
                         ui.button(icon="delete").props("flat round").classes("text-red-400").on(
-                            "click", lambda f=feed: confirm_delete(f)
+                            "click", lambda _, f=feed: confirm_delete(f)
                         )
 
         def confirm_delete(feed: dict):
